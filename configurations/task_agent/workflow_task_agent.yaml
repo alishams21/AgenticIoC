@@ -1,0 +1,19 @@
+defaults:
+  - core_task_agent
+
+# Agent configurations
+agents:
+  planner_agent:
+    name: "task_planner"
+    max_turns: 200
+    prompt: PLANNER_AGENT
+
+  manager_agent:
+    name: "task_manager"
+    max_turns: 400
+    prompt: MANAGER_AGENT
+
+  critic_agent:
+    name: "task_critic"
+    max_turns: 200
+    prompt: CRITIC_AGENT

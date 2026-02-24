@@ -1,0 +1,19 @@
+defaults:
+  - core_project_agent
+
+# Agent configurations
+agents:
+  workflow_planner_agent:
+    name: "project_planner"
+    max_turns: 500
+    prompt: PLANNER_AGENT
+
+  workflow_manager_agent:
+    name: "project_manager"
+    max_turns: 1000
+    prompt: MANAGER_AGENT
+
+  workflow_critic_agent:
+    name: "project_critic"
+    max_turns: 500
+    prompt: CRITIC_AGENT

@@ -1,0 +1,19 @@
+defaults:
+  - core_module_agent
+
+# Agent configurations
+agents:
+  planner_agent:
+    name: "module_planner"
+    max_turns: 300
+    prompt: PLANNER_AGENT
+
+  manager_agent:
+    name: "module_manager"
+    max_turns: 600
+    prompt: MANAGER_AGENT
+
+  critic_agent:
+    name: "module_critic"
+    max_turns: 300
+    prompt: CRITIC_AGENT
