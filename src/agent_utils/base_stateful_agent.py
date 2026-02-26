@@ -145,6 +145,9 @@ class BaseStatefulAgent(ABC):
         # Initialize checkpoint state (N-1 and N pattern for rollback).
         initialize_checkpoint_attributes(target=self)
 
+        # Last designer output (e.g. current plan); used so critic can see what to evaluate.
+        self._last_designer_output: str | None = None
+
     def _get_model_settings(
         self,
         settings_key: str | None = None,
@@ -481,6 +484,16 @@ class BaseStatefulAgent(ABC):
         """
         return {}
 
+    def _get_critique_context(self) -> str:
+        """Extra context appended to the critique instruction (e.g. current plan).
+
+        Override in subclasses so the critic sees what to evaluate. Default: none.
+
+        Returns:
+            String to append after the critique instruction, or empty.
+        """
+        return ""
+
     async def _request_critique_impl(self, update_checkpoint: bool = True) -> str:
         """Implementation for critique request.
 
@@ -505,9 +518,11 @@ class BaseStatefulAgent(ABC):
             prompt_enum=prompt_enum,
             **extra_kwargs,
         )
+        context = self._get_critique_context()
+        critic_input = (critique_instruction + "\n\n" + context) if context else critique_instruction
         result = await Runner.run(
             starting_agent=self.critic,
-            input=critique_instruction,
+            input=critic_input,
             session=self.critic_session,
             max_turns=self.cfg.agents.critic_agent.max_turns,
             run_config=self._create_run_config(),
@@ -603,8 +618,9 @@ class BaseStatefulAgent(ABC):
             log_agent_response(
                 response=result.final_output, agent_name="DESIGNER (CHANGE)"
             )
+            self._last_designer_output = result.final_output
 
-        return result.final_output
+        return result.final_output or ""
 
     @abstractmethod
     def _get_initial_design_prompt_enum(self) -> Any:
@@ -699,5 +715,6 @@ class BaseStatefulAgent(ABC):
             log_agent_response(
                 response=result.final_output, agent_name="DESIGNER (INITIAL)"
             )
+            self._last_designer_output = result.final_output
 
-        return result.final_output
+        return result.final_output or ""

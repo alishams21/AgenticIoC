@@ -109,6 +109,35 @@ class FurnitureCritiqueWithScores(CritiqueWithScores):
 
 
 @dataclass
+class ProjectCritiqueWithScores(CritiqueWithScores):
+    """Project plan critic with five evaluation dimensions (0–10 each).
+
+    Matches the categories in project_agent critic prompts.
+    """
+
+    clarity_structure: CategoryScore
+    """Clarity and structure of project → modules → tasks hierarchy."""
+    feasibility_scope: CategoryScore
+    """Feasibility and scope (realism, task sizing)."""
+    risk_dependencies: CategoryScore
+    """Risk and dependency management."""
+    execution_readiness: CategoryScore
+    """Execution readiness (testing, observability, rollout)."""
+    prompt_following: CategoryScore
+    """Adherence to project brief requirements."""
+
+    def get_scores(self) -> list[CategoryScore]:
+        """Return all project critique category scores."""
+        return [
+            self.clarity_structure,
+            self.feasibility_scope,
+            self.risk_dependencies,
+            self.execution_readiness,
+            self.prompt_following,
+        ]
+
+
+@dataclass
 class ManipulandCritiqueWithScores(CritiqueWithScores):
     """Manipuland agent critique with standard categories.
 

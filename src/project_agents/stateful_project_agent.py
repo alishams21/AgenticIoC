@@ -18,7 +18,7 @@ from agents import Agent, FunctionTool, Runner, RunResult
 from omegaconf import DictConfig
 
 from src.agent_utils.base_stateful_agent import BaseStatefulAgent, AgentType, log_agent_usage
-from src.agent_utils.scoring import CritiqueWithScores
+from src.agent_utils.scoring import ProjectCritiqueWithScores
 from src.project_agents.base_project_agent import BaseProjectAgent
 from src.prompts import ProjectAgentPrompts, prompt_registry
 
@@ -71,6 +71,13 @@ class StatefulProjectAgent(BaseStatefulAgent, BaseProjectAgent):
         """Prompt enum for design-change instruction (unused by current tools)."""
         return ProjectAgentPrompts.DESIGNER_CRITIQUE_INSTRUCTION
 
+    def _get_critique_context(self) -> str:
+        """Pass the current project plan so the critic can evaluate it."""
+        plan = getattr(self, "_last_designer_output", None)
+        if not plan or not plan.strip():
+            return ""
+        return "## Current project plan to evaluate\n\n" + plan.strip()
+
     def _get_initial_design_prompt_enum(self) -> Any:
         """Prompt enum for initial design instruction (unused by current tools)."""
         return ProjectAgentPrompts.DESIGNER_INITIAL_INSTRUCTION
@@ -111,7 +118,7 @@ class StatefulProjectAgent(BaseStatefulAgent, BaseProjectAgent):
         return super()._create_critic_agent(
             tools=tools,
             prompt_enum=ProjectAgentPrompts.CRITIC_AGENT,
-            output_type=CritiqueWithScores,
+            output_type=ProjectCritiqueWithScores,
             project_prompt=self.project_prompt,
         )
 
