@@ -494,6 +494,14 @@ class BaseStatefulAgent(ABC):
         """
         return ""
 
+    async def _get_critique_context_async(self) -> str:
+        """Async wrapper for getting critique context.
+
+        Subclasses that need async access to context (e.g. reading from sessions)
+        can override this method instead of _get_critique_context().
+        """
+        return self._get_critique_context()
+
     async def _request_critique_impl(self, update_checkpoint: bool = True) -> str:
         """Implementation for critique request.
 
@@ -518,7 +526,7 @@ class BaseStatefulAgent(ABC):
             prompt_enum=prompt_enum,
             **extra_kwargs,
         )
-        context = self._get_critique_context()
+        context = await self._get_critique_context_async()
         critic_input = (critique_instruction + "\n\n" + context) if context else critique_instruction
         result = await Runner.run(
             starting_agent=self.critic,
@@ -618,7 +626,24 @@ class BaseStatefulAgent(ABC):
             log_agent_response(
                 response=result.final_output, agent_name="DESIGNER (CHANGE)"
             )
-            self._last_designer_output = result.final_output
+
+            # Persist the updated design into the designer session so that
+            # downstream critics can read the current plan from session
+            # history (and benefit from trimming/summarization).
+            try:
+                if self.designer_session is not None:
+                    await self.designer_session.add_items(
+                        [
+                            {
+                                "role": "assistant",
+                                "content": result.final_output,
+                            }
+                        ]
+                    )
+            except Exception as e:  # Best-effort; logging only.
+                console_logger.warning(
+                    f"Failed to append design-change output to designer session: {e}"
+                )
 
         return result.final_output or ""
 
@@ -715,6 +740,22 @@ class BaseStatefulAgent(ABC):
             log_agent_response(
                 response=result.final_output, agent_name="DESIGNER (INITIAL)"
             )
-            self._last_designer_output = result.final_output
+
+            # Persist the initial design into the designer session so that
+            # downstream critics can read the plan from session history.
+            try:
+                if self.designer_session is not None:
+                    await self.designer_session.add_items(
+                        [
+                            {
+                                "role": "assistant",
+                                "content": result.final_output,
+                            }
+                        ]
+                    )
+            except Exception as e:  # Best-effort; logging only.
+                console_logger.warning(
+                    f"Failed to append initial design output to designer session: {e}"
+                )
 
         return result.final_output or ""

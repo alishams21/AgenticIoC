@@ -39,8 +39,20 @@ class StatefulProjectAgent(BaseStatefulAgent, BaseProjectAgent):
         BaseProjectAgent.__init__(self, cfg=cfg, logger=logger)
         BaseStatefulAgent.__init__(self, cfg=cfg, logger=logger)
 
+        # Use a per-run session prefix derived from the logger's output_dir so
+        # that designer and critic share a session namespace for this run while
+        # remaining isolated from other runs.
+        output_dir_name = Path(self.logger.output_dir).name if getattr(
+            self.logger, "output_dir", None
+        ) is not None else ""
+        self.session_prefix: str = f"{output_dir_name}_" if output_dir_name else ""
+
         # Persistent agent sessions (reuse BaseStatefulAgent implementation).
-        self.designer_session, self.critic_session = self._create_sessions()
+        # Both designer and critic sessions share the same prefix so they are
+        # tied to the same logical run.
+        self.designer_session, self.critic_session = self._create_sessions(
+            session_prefix=self.session_prefix
+        )
 
         # Agent instances (created lazily when running a plan).
         self.designer: Agent | None = None
@@ -71,12 +83,52 @@ class StatefulProjectAgent(BaseStatefulAgent, BaseProjectAgent):
         """Prompt enum for design-change instruction (unused by current tools)."""
         return ProjectAgentPrompts.DESIGNER_CRITIQUE_INSTRUCTION
 
-    def _get_critique_context(self) -> str:
-        """Pass the current project plan so the critic can evaluate it."""
-        plan = getattr(self, "_last_designer_output", None)
-        if not plan or not plan.strip():
+    async def _get_critique_context_async(self) -> str:
+        """Build critique context from the designer's session history.
+
+        This leverages TurnTrimmingSession (when enabled) so that older turns are
+        summarized and only the most relevant recent context is expanded.
+        """
+        session = getattr(self, "designer_session", None)
+        if session is None:
             return ""
-        return "## Current project plan to evaluate\n\n" + plan.strip()
+
+        try:
+            items = await session.get_items()
+        except Exception:
+            # Fail open: if session access fails, return no extra context.
+            return ""
+
+        if not items:
+            return ""
+
+        # Collect recent user + assistant messages (which may already include
+        # summaries from TurnTrimmingSession for older turns).
+        texts: list[str] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            role = item.get("role")
+            if role not in ("user", "assistant"):
+                continue
+            content = item.get("content")
+
+            if isinstance(content, str):
+                texts.append(f"{role}: {content}")
+            elif isinstance(content, list):
+                part_texts: list[str] = []
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") in ("input_text", "text"):
+                        text = part.get("text", "")
+                        if text:
+                            part_texts.append(text)
+                if part_texts:
+                    texts.append(f"{role}: {' '.join(part_texts)}")
+
+        if not texts:
+            return ""
+
+        return "## Recent designer conversation (trimmed)\n\n" + "\n\n".join(texts)
 
     def _get_initial_design_prompt_enum(self) -> Any:
         """Prompt enum for initial design instruction (unused by current tools)."""
