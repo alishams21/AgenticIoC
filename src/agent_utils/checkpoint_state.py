@@ -75,3 +75,20 @@ def initialize_checkpoint_attributes(target: Any) -> None:
 
     # Placement style tracking (default: natural).
     target.placement_style: str = "natural"
+
+
+def initialize_plan_checkpoint_attributes(target: Any) -> None:
+    """Initialize plan checkpoint state attributes on a target object.
+
+    Used by plan-based agents (e.g. project planner) to maintain N-1 and N
+    checkpoints of the plan state and scores for rollback when quality regresses.
+    Same pattern as scene checkpoints but for plan text / project state.
+
+    Args:
+        target: Object to initialize plan checkpoint attributes on (typically self).
+    """
+    # Plan state checkpoints (N-1 and N) for rollback.
+    target.previous_plan_checkpoint: dict[str, Any] | None = None
+    target.plan_checkpoint: dict[str, Any] | None = None
+    # Hash of plan at last checkpoint (skip redundant final critique if unchanged).
+    target.checkpoint_plan_hash: int | None = None

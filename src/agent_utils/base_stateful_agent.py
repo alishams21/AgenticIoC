@@ -33,10 +33,14 @@ from omegaconf import DictConfig
 from openai import Timeout
 from openai.types.shared import Reasoning
 
-from src.agent_utils.checkpoint_state import initialize_checkpoint_attributes
+from src.agent_utils.checkpoint_state import (
+    initialize_checkpoint_attributes,
+    initialize_plan_checkpoint_attributes,
+)
 from src.agent_utils.intra_turn_image_filter import IntraTurnImageFilter
 from src.agent_utils.scoring import (
     CritiqueWithScores,
+    compute_total_score,
     format_score_deltas_for_planner,
     log_agent_response,
     log_critique_scores,
@@ -107,6 +111,8 @@ class BaseStatefulAgent(ABC):
 
     # Set True only for agents that have scene state and use checkpoint rollback.
     _uses_scene_checkpoints: bool = False
+    # Set True for plan-based agents (e.g. project) that checkpoint plan state for rollback.
+    _uses_plan_checkpoints: bool = False
     # Set to a tool name (e.g. "observe_scene") to force critic's first tool call; None for plan-only agents.
     _critic_tool_choice: str | None = None
 
@@ -144,9 +150,8 @@ class BaseStatefulAgent(ABC):
 
         # Initialize checkpoint state (N-1 and N pattern for rollback).
         initialize_checkpoint_attributes(target=self)
+        initialize_plan_checkpoint_attributes(target=self)
 
-        # Last designer output (e.g. current plan); used so critic can see what to evaluate.
-        self._last_designer_output: str | None = None
 
     def _get_model_settings(
         self,
@@ -430,16 +435,22 @@ class BaseStatefulAgent(ABC):
             return await self._request_initial_design_impl()
 
         @function_tool
-        async def request_critique() -> str:
+        async def request_critique(is_final_round: bool = False) -> str:
             """Request the critic to evaluate the current design.
 
             The critic will examine the current state and provide feedback
             on what works well and what needs improvement.
 
+            Args:
+                is_final_round: Set to True when this is the last critique before
+                    completion (e.g. stop condition met or max rounds reached).
+                    When True, checkpoint state is not updated so the previous
+                    iteration remains available for rollback comparison.
+
             Returns:
                 Critic's detailed evaluation with specific improvement suggestions.
             """
-            return await self._request_critique_impl()
+            return await self._request_critique_impl(update_checkpoint=not is_final_round)
 
         @function_tool
         async def request_design_change(instruction: str) -> str:
@@ -457,11 +468,27 @@ class BaseStatefulAgent(ABC):
             """
             return await self._request_design_change_impl(instruction)
 
+        @function_tool
+        async def reset_plan_to_previous_checkpoint() -> str:
+            """Revert the plan to the previous checkpoint if the latest scores regressed.
+
+            Compare the latest critique scores with the previous checkpoint scores.
+            If the total score decreased, reset the plan to the last saved version
+            (N-1) so the designer can continue from a better state. Use when
+            iteration made things worse.
+
+            Returns:
+                Message describing whether a reset was performed and the outcome.
+            """
+            return await self._perform_plan_checkpoint_reset()
+
         tools: list[FunctionTool] = [request_initial_design]
 
         # Only add critique-related tools if critique rounds are enabled.
         if self.cfg.max_critique_rounds > 0:
             tools.extend([request_critique, request_design_change])
+            if getattr(self, "_uses_plan_checkpoints", False):
+                tools.append(reset_plan_to_previous_checkpoint)
 
         return tools
 
@@ -493,6 +520,78 @@ class BaseStatefulAgent(ABC):
             String to append after the critique instruction, or empty.
         """
         return ""
+
+    def _on_designer_output(self, output: str) -> None:
+        """Called after the designer produces output (initial design or design change).
+
+        Override in subclasses to update derived state (e.g. current_plan_text
+        for plan checkpointing). Default: no-op.
+
+        Args:
+            output: The designer's final output text.
+        """
+        pass
+
+    def _get_plan_state_for_checkpoint(self) -> dict[str, Any] | None:
+        """Return current plan state for checkpointing (plan-based agents only).
+
+        Override in subclasses that set _uses_plan_checkpoints. Return a dict
+        (e.g. {"plan_text": self.current_plan_text}) to checkpoint; return None
+        to skip checkpoint update.
+
+        Returns:
+            Dict suitable for copy.deepcopy and rollback, or None.
+        """
+        return None
+
+    async def _apply_plan_checkpoint_rollback(
+        self, plan_checkpoint: dict[str, Any]
+    ) -> None:
+        """Apply rollback to a previous plan checkpoint (plan-based agents only).
+
+        Override in subclasses that set _uses_plan_checkpoints. Typically:
+        set current_plan_text from plan_checkpoint["plan_text"] and optionally
+        append a message to the designer session summarizing the rollback.
+
+        Args:
+            plan_checkpoint: The N-1 checkpoint dict (e.g. {"plan_text": "..."}).
+        """
+        pass
+
+    async def _perform_plan_checkpoint_reset(self) -> str:
+        """Compare current vs previous checkpoint scores and rollback if regressed.
+
+        Used by the reset_plan_to_previous_checkpoint planner tool. If total
+        score decreased, applies _apply_plan_checkpoint_rollback(previous_plan_checkpoint).
+
+        Returns:
+            Message for the planner describing whether reset was done and why.
+        """
+        if not getattr(self, "_uses_plan_checkpoints", False):
+            return "Plan checkpoint reset is not available for this agent."
+        if self.previous_plan_checkpoint is None or self.previous_checkpoint_scores is None:
+            return "No previous checkpoint to reset to."
+        if self.checkpoint_scores is None:
+            return "No current scores to compare; run a critique first."
+        current_total = compute_total_score(self.checkpoint_scores)
+        previous_total = compute_total_score(self.previous_checkpoint_scores)
+        if current_total >= previous_total:
+            return (
+                f"Scores did not regress; no reset needed. "
+                f"Current total: {current_total}, previous checkpoint: {previous_total}."
+            )
+        await self._apply_plan_checkpoint_rollback(self.previous_plan_checkpoint)
+        console_logger.info(
+            "Plan checkpoint reset: reverted to previous version "
+            "(current total=%d, previous=%d)",
+            current_total,
+            previous_total,
+        )
+        return (
+            f"Reset plan to previous checkpoint (scores regressed: "
+            f"current total {current_total} vs previous {previous_total}). "
+            "The designer session has been updated with the reverted plan."
+        )
 
     async def _get_critique_context_async(self) -> str:
         """Async wrapper for getting critique context.
@@ -584,6 +683,17 @@ class BaseStatefulAgent(ABC):
                 self.checkpoint_scene_hash = scene.content_hash()
             self.final_render_dir = images_dir
 
+        # Plan checkpoints: same N-1/N pattern for plan state (e.g. project plan text).
+        if getattr(self, "_uses_plan_checkpoints", False) and update_checkpoint:
+            plan_state = self._get_plan_state_for_checkpoint()
+            if plan_state is not None:
+                self.previous_plan_checkpoint = self.plan_checkpoint
+                self.previous_checkpoint_scores = self.checkpoint_scores
+                self.plan_checkpoint = copy.deepcopy(plan_state)
+                self.checkpoint_scores = response
+                plan_text = plan_state.get("plan_text") or ""
+                self.checkpoint_plan_hash = hash(plan_text)
+
         return response.critique + score_change_msg
 
     @abstractmethod
@@ -644,6 +754,7 @@ class BaseStatefulAgent(ABC):
                 console_logger.warning(
                     f"Failed to append design-change output to designer session: {e}"
                 )
+            self._on_designer_output(result.final_output)
 
         return result.final_output or ""
 
@@ -757,5 +868,6 @@ class BaseStatefulAgent(ABC):
                 console_logger.warning(
                     f"Failed to append initial design output to designer session: {e}"
                 )
+            self._on_designer_output(result.final_output)
 
         return result.final_output or ""

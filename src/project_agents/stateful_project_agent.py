@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Tuple
+from typing import Any
 
 from agents import Agent, FunctionTool, Runner, RunResult
 from omegaconf import DictConfig
@@ -27,6 +27,8 @@ console_logger = logging.getLogger(__name__)
 
 class StatefulProjectAgent(BaseStatefulAgent, BaseProjectAgent):
     """Stateful project planning agent using planner/designer/critic workflow."""
+
+    _uses_plan_checkpoints: bool = True
 
     def __init__(self, cfg: DictConfig, logger: Any):
         """Initialize the project planning agent.
@@ -61,6 +63,8 @@ class StatefulProjectAgent(BaseStatefulAgent, BaseProjectAgent):
 
         # Project prompt describing the overall plan (set when generating a plan).
         self.project_prompt: str = ""
+        # Current plan text (updated after each designer output; used for checkpoints).
+        self.current_plan_text: str = ""
 
     # -------------------------------------------------------------------------
     # BaseStatefulAgent abstract interface implementations
@@ -137,6 +141,43 @@ class StatefulProjectAgent(BaseStatefulAgent, BaseProjectAgent):
     def _get_initial_design_prompt_kwargs(self) -> dict:
         """Template variables for initial design prompt (none for project agent)."""
         return {}
+
+    # -------------------------------------------------------------------------
+    # Plan checkpoint hooks (BaseStatefulAgent)
+    # -------------------------------------------------------------------------
+
+    def _on_designer_output(self, output: str) -> None:
+        """Update current plan text after each designer output for checkpointing."""
+        self.current_plan_text = output or ""
+
+    def _get_plan_state_for_checkpoint(self) -> dict[str, Any] | None:
+        """Return current plan state for checkpoint (N-1/N rollback)."""
+        if not self.current_plan_text:
+            return None
+        return {"plan_text": self.current_plan_text}
+
+    async def _apply_plan_checkpoint_rollback(
+        self, plan_checkpoint: dict[str, Any]
+    ) -> None:
+        """Revert plan to previous checkpoint and notify designer session."""
+        plan_text = plan_checkpoint.get("plan_text") or ""
+        self.current_plan_text = plan_text
+        rollback_msg = (
+            "Resetting to previous plan version (scores regressed). "
+            "The plan below is the reverted checkpoint."
+        )
+        try:
+            if self.designer_session is not None:
+                await self.designer_session.add_items(
+                    [
+                        {"role": "user", "content": rollback_msg},
+                        {"role": "assistant", "content": plan_text},
+                    ]
+                )
+        except Exception as e:
+            console_logger.warning(
+                "Failed to append plan rollback to designer session: %s", e
+            )
 
     # -------------------------------------------------------------------------
     # Internal helpers
