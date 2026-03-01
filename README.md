@@ -1,6 +1,6 @@
-# agenticsprint
+# sprintagent
 
-`agenticsprint` is an autonomous, fault-tolerant hierarchical agentic system that transforms high-level project briefs into execution-ready roadmaps through a pipeline: **project** → **module** → **task** → **visualization**. Each stage is handled by a specialized agent that uses an internal planner/designer/critic loop to refine outputs before passing them to the next level.
+`sprintagent` is an autonomous, fault-tolerant hierarchical agentic system that transforms high-level project briefs into execution-ready roadmaps through a pipeline: **project** → **module** → **task** → **visualization**. Each stage is handled by a specialized agent that uses an internal planner/designer/critic loop to refine outputs before passing them to the next level.
 
 ---
 
